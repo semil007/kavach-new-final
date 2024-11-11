@@ -1,6 +1,7 @@
 import streamlit as st
 import hashlib
 import os
+import warnings
 from PyPDF2 import PdfReader
 from PIL import Image
 from io import BytesIO
@@ -12,14 +13,19 @@ import google.generativeai as genai
 from dotenv import load_dotenv
 import easyocr  # For OCR-based text extraction
 import numpy as np  # For array conversion
- 
+import requests
+import base64
+
+# Suppress all warnings globally
+warnings.filterwarnings("ignore")
+
 # Load environment variables from .env file (for local development)
 load_dotenv()
- 
+
 # Helper function to hash passwords for security
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
- 
+
 # Predefined credentials with hashed passwords
 users = {
     'admin': {
@@ -28,90 +34,100 @@ users = {
         'password': hash_password('Kavach2024'),
     }
 }
- 
+
 # Authentication function
 def authenticate(username, password):
     if username in users and users[username]['password'] == hash_password(password):
         return True
     return False
- 
-# Background image styling
-bg_img = """
-<style>
-[data-testid="stMain"] {
-    background-image: url("https://skavachbotstorage.blob.core.windows.net/images/sample-11.jpg?sp=r&st=2024-11-11T04:52:41Z&se=2025-11-11T12:52:41Z&spr=https&sv=2022-11-02&sr=b&sig=4WLFvPbpbrNFVbvelAJ49SdCkrlTA1VrfeUEd6hBaiE%3D");
-    background-size: cover;
-}
-[data-testid="stHeader"] {
-    background-color: rgba(0, 0, 0, 0);
-}
-</style>
-"""
-st.markdown(bg_img, unsafe_allow_html=True)
- 
-# Streamlit app layout
-st.title("Kavach Guidelines Chatbot")
- 
+
+# Function to set the background image using CSS directly
+def set_background_image():
+    # CSS styling to apply the background image on login page only
+    bg_img = """
+    <style>
+    [data-testid="stMain"] {
+        background-image: url("https://skavachbotstorage.blob.core.windows.net/images/sample-11.jpg?sp=r&st=2024-11-11T04:52:41Z&se=2025-11-11T12:52:41Z&spr=https&sv=2022-11-02&sr=b&sig=4WLFvPbpbrNFVbvelAJ49SdCkrlTA1VrfeUEd6hBaiE%3D");
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+    }
+    [data-testid="stHeader"] {
+        background-color: rgba(0, 0, 0, 0);
+    }
+    /* Hide background image on chatbot page */
+    .chatbot-page [data-testid="stMain"] {
+        background-image: none;
+    }
+    </style>
+    """
+    st.markdown(bg_img, unsafe_allow_html=True)
+
 # Initialize session state
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
- 
+
+# Apply the background image globally
+set_background_image()
+
 # ------------ Authentication Page ------------
 def authentication_page():
+    st.title("Kavach Guidelines Chatbot")
     st.subheader("Login to Access Chatbot")
+    
     username = st.text_input('Username')
     password = st.text_input('Password', type='password')
- 
+
     if st.button('Login'):
         if authenticate(username, password):
             st.session_state.logged_in = True
-            st.success(f"Welcome {users[username]['name']}! Redirecting to chatbot...")
- 
+            # Refresh the page by toggling a session state variable
+            st.session_state["rerun_toggle"] = not st.session_state.get("rerun_toggle", False)
         else:
             st.error('Invalid username or password. Please try again.')
- 
+
 # ------------ Chatbot Page ------------
 def chatbot_page():
-    if not st.session_state.logged_in:
-        authentication_page()
-        return
-   
+    # Add a CSS class to hide the background image on the chatbot page
+    st.markdown("<style>body .stApp { background-image: none; }</style>", unsafe_allow_html=True)
+    
+    st.title("Kavach Guidelines Chatbot")
     st.subheader("Welcome to the Chatbot!")
- 
+
     # Initialize chat history and OCR reader
     if 'chat_history' not in st.session_state:
         st.session_state.chat_history = []
     reader = easyocr.Reader(['en'])
- 
-    pdf_path = 'Annexure-B.pdf'  # Ensure this file exists in the same directory
- 
+
+    pdf_path = r"D:\final-v1-chatbot\kavach-v1\Annexure-B.pdf"  # Ensure this file exists in the same directory
+
     # OCR helper function
     def contains_text_using_easyocr(image):
         image_np = np.array(image)
         result = reader.readtext(image_np)
         return len(result) > 0
- 
+
     # Load and process PDF
     @st.cache_resource
     def load_pdf():
         pdf_reader = PdfReader(pdf_path)
         kavach_text = ''.join(page.extract_text() or "" for page in pdf_reader.pages)
         return kavach_text
- 
+
     kavach_text = load_pdf()
- 
+
     # Text splitter
     chunk_size = 1000
     chunk_overlap = 100
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
- 
+
     # Chunk creation
     @st.cache_resource
     def create_chunks(kavach_text):
         return [{'text': chunk, 'source': 'kavach_source'} for chunk in text_splitter.split_text(kavach_text)]
- 
+
     kavach_chunks = create_chunks(kavach_text)
- 
+
     # FAISS Vector Store
     @st.cache_resource
     def create_vector_store(kavach_chunks):
@@ -121,9 +137,9 @@ def chatbot_page():
             embedding=embeddings,
             metadatas=[{'source': chunk['source']} for chunk in kavach_chunks]
         )
- 
+
     vectorstore = create_vector_store(kavach_chunks)
- 
+
     # Configure Google Gemini Pro API
     api_key = os.getenv("MY_API_KEY")
     if api_key:
@@ -131,32 +147,32 @@ def chatbot_page():
     else:
         st.error("API Key not found. Ensure 'MY_API_KEY' is set in environment variables.")
         return
- 
+
     def generate_kavach_response(prompt):
         model = genai.GenerativeModel('gemini-1.5-pro-002')
         response = model.generate_content(prompt)
         return response.text
- 
+
     def get_kavach_decision(query):
         retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
         relevant_docs = retriever.get_relevant_documents(query)
         combined_text = "\n".join([doc.page_content for doc in relevant_docs])
-       
+
         if not combined_text.strip():
             return "No relevant information found based on your query."
-       
+
         prompt = f"Based on the following Kavach guidelines:\n\n{combined_text}\n\nAnswer the query: {query}"
         return generate_kavach_response(prompt)
- 
+
     # Query input
     if user_query := st.chat_input("Ask a question about Kavach guidelines"):
         # Append user message to chat history
         st.session_state.chat_history.append({"role": "user", "content": user_query})
- 
+
         # Get bot response
         decision = get_kavach_decision(user_query)
         st.session_state.chat_history.append({"role": "assistant", "content": decision})
- 
+
         # Check for any images if query mentions "image" or "illustration"
         if "image" in user_query.lower() or "illustration" in user_query.lower():
             pdf_document = fitz.open(pdf_path)
@@ -169,7 +185,7 @@ def chatbot_page():
                     image = Image.open(BytesIO(base_image["image"]))
                     if not contains_text_using_easyocr(image):
                         images.append(image)
- 
+
             # Display extracted images in a chat-style message if any are found
             if images:
                 with st.chat_message("assistant"):
@@ -182,13 +198,12 @@ def chatbot_page():
             else:
                 with st.chat_message("assistant"):
                     st.write("No Kavach-related images found in the document.")
- 
+
     # Display chat history using `st.chat_message`
     for chat in st.session_state.chat_history:
         with st.chat_message(chat["role"]):
             st.write(chat["content"])
- 
- 
+
 # Display the appropriate page based on login status
 if st.session_state.logged_in:
     chatbot_page()  # Shows the chat interface if logged in
