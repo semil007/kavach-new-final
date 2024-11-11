@@ -99,7 +99,7 @@ def chatbot_page():
         st.session_state.chat_history = []
     reader = easyocr.Reader(['en'])
 
-    pdf_path = r"D:\final-v1-chatbot\kavach-v1\Annexure-B.pdf"  # Ensure this file exists in the same directory
+    pdf_path ="Annexure-B.pdf"  # Ensure this file exists in the same directory
 
     # OCR helper function
     def contains_text_using_easyocr(image):
